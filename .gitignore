@@ -1,0 +1,46 @@
+# Build outputs
+/promptq
+/promptq.exe
+/bin/
+/build/
+/dist/
+/release/
+*.test
+*.out
+*.exe
+*.tar.gz
+*.zip
+*.sha256
+
+# Go coverage and profiling
+/coverage.out
+*.coverprofile
+*.prof
+
+# Local caches and temporary data
+/.cache/
+/.promptq/
+/tmp/
+/.tmp/
+*.tmp
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+.envrc
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE and agent state
+.agents/
+.codex/
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo

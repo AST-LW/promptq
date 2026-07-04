@@ -1,0 +1,145 @@
+name: build-test-release
+
+on:
+    pull_request:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: "Release version, for example v0.1.0"
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: promptq-release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    build:
+        name: build
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/setup-go@v6
+              with:
+                  go-version-file: go.mod
+                  cache: true
+
+            - name: Build binary
+              run: go build -trimpath -o dist/promptq ./cmd/promptq
+
+    test:
+        name: test (${{ matrix.os }})
+        needs: build
+        runs-on: ${{ matrix.os }}
+
+        strategy:
+            fail-fast: false
+            matrix:
+                os:
+                    - ubuntu-latest
+                    - macos-latest
+                    - windows-latest
+
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: actions/setup-go@v6
+              with:
+                  go-version-file: go.mod
+                  cache: true
+
+            - name: Run tests
+              run: go test ./...
+
+    release:
+        name: release
+        needs: test
+        if: github.event_name == 'workflow_dispatch'
+        runs-on: macos-latest
+
+        permissions:
+            contents: write
+
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-go@v6
+              with:
+                  go-version-file: go.mod
+                  cache: true
+
+            - name: Validate version input
+              env:
+                  VERSION: ${{ inputs.version }}
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+
+                  if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "Invalid version: $VERSION"
+                    echo "Expected format: v0.1.0"
+                    exit 1
+                  fi
+
+                  if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+                    echo "Tag already exists: ${VERSION}"
+                    exit 1
+                  fi
+
+                  if gh release view "$VERSION" >/dev/null 2>&1; then
+                    echo "GitHub release already exists: ${VERSION}"
+                    exit 1
+                  fi
+
+            - name: Create release archives
+              env:
+                  VERSION: ${{ inputs.version }}
+              run: ./scripts/release.sh
+
+            - name: Publish GitHub release and tag
+              env:
+                  VERSION: ${{ inputs.version }}
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+
+                  touch .release-cleanup-enabled
+
+                  gh release create "$VERSION" \
+                    dist/* \
+                    --generate-notes \
+                    --target "$GITHUB_SHA"
+
+            - name: Publish Homebrew formula
+              env:
+                  HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+                  VERSION: ${{ inputs.version }}
+              run: ./scripts/publish-homebrew.sh
+
+            - name: Cleanup failed release and tag
+              if: failure()
+              env:
+                  VERSION: ${{ inputs.version }}
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+
+                  if [[ ! -f .release-cleanup-enabled ]]; then
+                    echo "Release was not created by this run. Skipping cleanup."
+                    exit 0
+                  fi
+
+                  echo "Cleaning up failed release/tag: ${VERSION}"
+
+                  gh release delete "$VERSION" --yes || true
+                  git push origin ":refs/tags/$VERSION" || true
+                  git tag -d "$VERSION" || true
+
+                  echo "Cleanup complete."
